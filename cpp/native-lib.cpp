@@ -1,68 +1,45 @@
 #include <jni.h>
-#include <string>
-#include <cstdlib>
-#include <cstring>
-#include <android/log.h>
-#include <cstdint>
-#include <cstdio>
-#include <dlfcn.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <unistd.h>
-#include <sys/mman.h>
-#include <pthread.h>
-#include <errno.h>
-#include <stdint.h>
+#include <android/log.h>
 
-#define TARGET_SIZE 1024
 #define LOG_TAG "CVE-2025-48595"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
-
-typedef int (*system_func_t)(const char *);
-typedef void (*free_func_t)(void*);
-typedef int (*setuid_func_t)(int);
+#define VULN_CONSTANT 64 // Например, размер заголовка структуры
 
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_android_1poc_MainActivity_triggerIntegerOverflowNative(JNIEnv *env, jobject thiz) {
-    LOGI("[*] CVE-2025-48595 - Native Trigger Activated");
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "[*] CVE-2025-48595 - Real Overflow Trigger");
 
-    // Имитация оверфлоу: передаем значение, которое в 32-bit int выглядит как маленькое,
-    // но в 64-bit контексте или при арифметике ведет себя агрессивно.
-    // В данном случае мы эмулируем ситуацию, где размер буфера вычисляется неверно.
+    // 1. Входные данные: пользователь передаёт значение, которое при сложении переполнится
+    size_t user_input = SIZE_MAX - VULN_CONSTANT + 1;
+    size_t calculated_size = user_input + VULN_CONSTANT; // 0 или малое число из-за переполнения
 
-    // Сценарий: malicious_size = SIZE_MAX (0xFFFFFFFFFFFFFFFF)
-    size_t malicious_size = (size_t)-1;
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "[*] User input: %zu", user_input);
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "[!] Calculated size (overflowed): %zu", calculated_size);
 
-    // Попытка выделения памяти под "гигантский" размер.
-    // В реальном фреймворке здесь может происходить оверфлоу при умножении перед malloc.
-    char *buffer = (char *)malloc(malicious_size);
+    // 2. Выделение памяти на основе ПЕРЕПОЛНЕННОГО размера
+    char *buffer = (char *)malloc(calculated_size);
 
     if (buffer == NULL) {
-        LOGI("[!] Мемо-истощение или оверфлоу размера в malloc()");
-
-        // Альтернативный вектор: если malloc вернул NULL, мы используем фиктивный размер
-        // который на самом деле меньше, но логика программы считает его большим.
-        size_t fake_size = 0xFFFFFFFF;
-        buffer = (char *)malloc(fake_size);
-
-        if (buffer == NULL) {
-            LOGE("[!] Не удалось выделить память: OOM Killed");
-            return; // App будет убит системой Android
-        }
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "[!] malloc returned NULL: %zu", calculated_size);
+        return;
     }
 
-    // ЗАПИСЬ ДАННЫХ ВНЕ ПРЕДЕЛОВ
-    // Если размер вычислен неверно из-за integer overflow, memset запишет данные за пределы реального буфера.
-    LOGI("[*] Запись 0x41 в буфер размером: %zu", malicious_size);
+    // 3. КРИТИЧЕСКАЯ ОШИБКА: Используем ИСХОДНЫЙ размер для записи!
+    size_t write_size = user_input + VULN_CONSTANT; // Программа думает, что выделяла это
 
-    // Для демонстрации уязвимости (в реальном CVE это происходит внутри системной библиотеки)
-    // Здесь мы симулируем краш, записывая далеко за пределы выделенного.
-    memset(buffer, 0x41, malicious_size > TARGET_SIZE ? TARGET_SIZE : malicious_size);
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "[*] Writing %zu bytes into buffer of actual size %zu",
+                        write_size, calculated_size);
 
-    LOGI("[+] POC исполнен: Переполнение памяти успешно инициировано");
+    if (write_size > calculated_size) {
+        memset(buffer, 0x41, write_size); // ЗАПИСЬ ВНЕ ПРЕДЕЛОВ!
 
-    // Если malloc вернул указатель на область размером ~1KB (из-за оверфлоу в расчете),
-    // но memset пытается записать SIZE_MAX байт -> SIGSEGV
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "[+] SCUDO SHOULD CATCH THIS!");
+        // Здесь SCUDO проверит канарку и вызовет abort() с сообщением о corrupted heap
+    }
+
     free(buffer);
 }
